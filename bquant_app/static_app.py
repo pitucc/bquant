@@ -34,7 +34,7 @@ def plot_dn_static(
     Returns (fig, ax, df) where df includes columns: cb_close, udly_close, ud_delta, nuke, dn
     """
 
-    # Fetch BUSINESS_DAYS series
+    # Fetch BUSINESS_DAYS series via BQL
     ts = fetch_timeseries_with_bql(cb_ticker=cb_ticker, udly_ticker=udly_ticker, start=start, end=end, freq="BUSINESS_DAYS")
 
     # Base: compute linear DN for alignment and fallback
@@ -93,6 +93,50 @@ def plot_dn_static(
     return fig, ax, df
 
 
+def plot_dn_static_from_series(
+    cb_close: pd.Series,
+    udly_close: pd.Series,
+    ud_delta: pd.Series,
+    anchor_date: str | pd.Timestamp | None = None,
+    method: str = "Delta (linéaire)",
+    delta_override: float | None = None,
+    use_oldest_delta: bool = False,
+    show_cb_reference: bool = True,
+):
+    """Static DN plot without any BQL dependency using pre-fetched series.
+
+    Provide price/delta series (date-indexed). Useful if BQL is unavailable or blocked.
+    """
+    df = compute_dollar_neutral(
+        cb_close=cb_close,
+        udly_close=udly_close,
+        ud_delta=ud_delta,
+        anchor_date=anchor_date,
+        method="delta" if not method.lower().startswith("external") else "external_nuke",
+        delta_override=delta_override,
+        use_oldest_delta=use_oldest_delta,
+    )
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 4))
+    df["dn"].plot(ax=ax, lw=2, label="DN")
+    if show_cb_reference:
+        ax2 = ax.twinx()
+        df["cb_close"].plot(ax=ax2, lw=1, color="#888", alpha=0.6, label="CB close")
+        ax2.set_ylabel("CB close")
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    else:
+        ax.legend(loc="upper left")
+
+    actual_anchor = (pd.to_datetime(anchor_date) if anchor_date is not None else df.index[0])
+    ax.set_title(f"Dollar-Neutral (Static) — Anchor: {pd.Timestamp(actual_anchor).date()}")
+    ax.set_ylabel("DN")
+    fig.tight_layout()
+    return fig, ax, df
+
+
 def example_static():
     """Convenience example for quick manual check."""
     cb = "DE000A4DFHL5 Corp"
@@ -100,4 +144,3 @@ def example_static():
     end = pd.Timestamp.today().date().isoformat()
     fig, ax, df = plot_dn_static(cb_ticker=cb, udly_ticker=None, start=start, end=end)
     return fig
-

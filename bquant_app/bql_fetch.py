@@ -29,20 +29,40 @@ def _ensure_series(df: pd.DataFrame, value_col: str = "value") -> pd.Series:
     raise ValueError("Cannot coerce DataFrame to a date-indexed Series. Provide tidy [date, value].")
 
 
+def _get_bql_service():
+    """Return (bql_module, bql_service) or raise a clear error if not Bloomberg BQL.
+
+    Detects the common pitfall where a third-party 'bql' package shadows Bloomberg's BQL
+    and lacks attributes like 'Function' or 'Service'.
+    """
+    try:
+        import bql  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "Bloomberg BQL runtime not available (cannot import 'bql'). Run in BQuant environment."
+        ) from exc
+
+    required = ("Service", "Function", "Request")
+    missing = [a for a in required if not hasattr(bql, a)]
+    if missing:
+        # Likely wrong 'bql' installed from PyPI shadowing Bloomberg's internal package
+        mod_path = getattr(bql, "__file__", "<unknown>")
+        raise RuntimeError(
+            f"Invalid 'bql' module: missing {missing}. Found at {mod_path}.\n"
+            "You may have installed an unrelated 'bql' from PyPI. In BQuant, you do not need to pip install 'bql'.\n"
+            "Fix: uninstall the PyPI 'bql' (e.g., `%pip uninstall -y bql`) and restart, or run this code inside Bloomberg BQuant."
+        )
+
+    return bql, bql.Service()
+
+
 def derive_underlying_from_cb(cb_ticker: str) -> str:
     """Derive the common underlying ticker from a convertible via BQL.
 
     Uses `cv_common_ticker_exch()` as provided by the user.
     Returns a string ticker (e.g., "TICK US Equity").
     """
-    try:
-        import bql
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "BQL runtime not available. Run in BQuant with Bloomberg BQL."
-        ) from exc
-
-    bq = bql.Service()
+    bql, bq = _get_bql_service()
     fn = bql.Function("cv_common_ticker_exch")
     req = bql.Request(cb_ticker, fn)
     res = bq.execute(req)
@@ -70,14 +90,7 @@ def fetch_timeseries_with_bql(
     - If `udly_ticker` is None, you may adapt this function to derive the
       underlying from the CB security via a BQL field.
     """
-    try:
-        import bql
-    except Exception as exc:  # pragma: no cover - informative error in non-BQL envs
-        raise RuntimeError(
-            "BQL runtime not available. Run this in BQuant or install Bloomberg's bql package."
-        ) from exc
-
-    bq = bql.Service()
+    bql, bq = _get_bql_service()
 
     # Helper to request a simple price time series
     def _px_ts(sec: str, field: str) -> pd.Series:
@@ -121,8 +134,7 @@ def compute_nuke_with_bql_function_single(
             nuke_input_underlying_price(input_udly_price))
     Returns a float.
     """
-    import bql  # rely on BQuant runtime
-    bq = bql.Service()
+    bql, bq = _get_bql_service()
 
     fn = bql.Function(
         "nuke_dollar_neutral_price",
@@ -151,8 +163,7 @@ def compute_nuke_series_with_bql(
     - anchor_udly_price: U(T0)
     """
     try:
-        import bql
-        bq = bql.Service()
+        bql, bq = _get_bql_service()
 
         # Try to build a vectorized expression using the underlying PX time series as input
         # Note: Some BQL deployments accept numeric literals in functions; adjust if needed.

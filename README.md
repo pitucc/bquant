@@ -72,6 +72,28 @@ fig
 
 Ce tracé ne dépend pas de Bokeh/Panel/JS et s’affiche dans un notebook JupyterLab restreint.
 
+Problème courant: AttributeError sur bql.Function / mauvais module bql
+-----------------------------------------------------------------------
+Si vous voyez `AttributeError: module 'bql' has no attribute 'Function'`, votre environnement charge probablement un mauvais package `bql` (depuis PyPI) au lieu du BQL Bloomberg.
+
+- Vérifiez le module chargé:
+  ```python
+  import bql, inspect; print(bql.__file__); print([a for a in ("Service","Function","Request") if hasattr(bql,a)])
+  ```
+- Si `Function/Service/Request` manquent et le chemin pointe vers un site-packages tiers, désinstallez ce `bql`:
+  ```python
+  %pip uninstall -y bql
+  ```
+  Redémarrez le kernel, puis exécutez dans un environnement Bloomberg BQuant où `bql` est fourni nativement.
+- Notre code détecte désormais ce cas et lève une erreur explicite avec guidance.
+
+Sans BQL, vous pouvez tracer via des séries pré-chargées:
+```python
+from bquant_app.static_app import plot_dn_static_from_series
+# Fournir des Series date-indexées: cb_close, udly_close, ud_delta
+fig, ax, df = plot_dn_static_from_series(cb_close, udly_close, ud_delta, anchor_date=None)
+```
+
 Exigences
 ---------
 - Bloomberg BQL accessible dans l’environnement pour `bql_fetch.py`.
