@@ -34,8 +34,8 @@ def plot_dn_static(
     Returns (fig, ax, df) where df includes columns: cb_close, udly_close, ud_delta, nuke, dn
     """
 
-    # Fetch BUSINESS_DAYS series via BQL
-    ts = fetch_timeseries_with_bql(cb_ticker=cb_ticker, udly_ticker=udly_ticker, start=start, end=end, freq="BUSINESS_DAYS")
+    # Fetch series via BQL (range over business days by default)
+    ts = fetch_timeseries_with_bql(cb_ticker=cb_ticker, udly_ticker=udly_ticker, start=start, end=end)
 
     # Base: compute linear DN for alignment and fallback
     df = compute_dollar_neutral(

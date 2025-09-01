@@ -103,7 +103,7 @@ cb = "<CB TICKER ICI>"             # e.g., "DE000A4DFHL5 Corp"
 ud = None                           # laisser None pour dérivation via cv_common_ticker_exch()
 start, end = "2024-01-01", pd.Timestamp.today().date().isoformat()
 
-ts = fetch_timeseries_with_bql(cb_ticker=cb, udly_ticker=ud, start=start, end=end, freq="BUSINESS_DAYS")
+ts = fetch_timeseries_with_bql(cb_ticker=cb, udly_ticker=ud, start=start, end=end)
 print("CB series head:\n", ts.cb_close.head())
 print("UDLY series head:\n", ts.udly_close.head())
 print("UD delta head:\n", ts.ud_delta.head())
