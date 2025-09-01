@@ -98,12 +98,17 @@ def _get_bql_service():
 def derive_underlying_from_cb(cb_ticker: str) -> str:
     """Derive the common underlying ticker from a convertible via BQL.
 
-    Uses `cv_common_ticker_exch()` as provided by the user.
+    Uses `cv_common_ticker_exch()` (data or func); falls back to legacy Function.
     Returns a string ticker (e.g., "TICK US Equity").
     """
     bql, bq = _get_bql_service()
-    item = {"value": bq.data.cv_common_ticker_exch()}
-    req = bql.Request(cb_ticker, item)
+    if hasattr(bq.data, "cv_common_ticker_exch"):
+        expr = bq.data.cv_common_ticker_exch()
+    elif hasattr(bq.func, "cv_common_ticker_exch"):
+        expr = bq.func.cv_common_ticker_exch()
+    else:
+        expr = bql.Function("cv_common_ticker_exch")
+    req = bql.Request(cb_ticker, {"value": expr})
     res = bq.execute(req)
     df = res[0].df()
     # Expect a single string value
@@ -131,15 +136,22 @@ def fetch_timeseries_with_bql(
     """
     bql, bq = _get_bql_service()
 
-    # Helper to request a simple time series from bq.data
+    # Helper to request a simple time series (data item or function)
     def _ts(sec: str, data_item_name: str) -> pd.Series:
         # Use two-parameter range per BQL guide (default business days)
         dates = bq.func.range(start, end)
-        try:
-            data_item_factory = getattr(bq.data, data_item_name)
-        except AttributeError as exc:
-            raise RuntimeError(f"Unknown BQL data item: {data_item_name}") from exc
-        di = data_item_factory(dates=dates)
+        di = None
+        if hasattr(bq.data, data_item_name):
+            di = getattr(bq.data, data_item_name)(dates=dates)
+        elif hasattr(bq.func, data_item_name):
+            # Some items are exposed as functions
+            try:
+                di = getattr(bq.func, data_item_name)(dates=dates)
+            except TypeError:
+                di = getattr(bq.func, data_item_name)(dates)
+        else:
+            # Legacy fallback
+            di = bql.Function(data_item_name, dates)
         req = bql.Request(sec, {"value": di})
         res = bq.execute(req)
         df = res[0].df()
@@ -157,10 +169,46 @@ def fetch_timeseries_with_bql(
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
     dates = bq.func.range(start, end)
-    delta_item = {"value": bq.data.ud_delta(dates=dates)}
-    delta_req = bql.Request(cb_ticker, delta_item)
-    delta_res = bq.execute(delta_req)
-    ud_delta = _ensure_series(delta_res[0].df())
+    # Robust resolution for ud_delta: try time series first; if it fails, try scalar and broadcast
+    try:
+        if hasattr(bq.data, "ud_delta"):
+            delta_expr = bq.data.ud_delta(dates=dates)
+        elif hasattr(bq.func, "ud_delta"):
+            try:
+                delta_expr = bq.func.ud_delta(dates=dates)
+            except TypeError:
+                delta_expr = bq.func.ud_delta(dates)
+        else:
+            delta_expr = bql.Function("ud_delta", dates)
+
+        delta_item = {"value": delta_expr}
+        delta_req = bql.Request(cb_ticker, delta_item)
+        delta_res = bq.execute(delta_req)
+        ud_delta = _ensure_series(delta_res[0].df())
+    except Exception:
+        # Scalar fallback (as-of), then broadcast over cb_close index
+        scalar_expr = None
+        if hasattr(bq.data, "ud_delta"):
+            try:
+                scalar_expr = bq.data.ud_delta()
+            except Exception:
+                scalar_expr = None
+        if scalar_expr is None and hasattr(bq.func, "ud_delta"):
+            try:
+                scalar_expr = bq.func.ud_delta()
+            except Exception:
+                scalar_expr = None
+        if scalar_expr is None:
+            scalar_expr = bql.Function("ud_delta")
+
+        scalar_req = bql.Request(cb_ticker, {"value": scalar_expr})
+        scalar_res = bq.execute(scalar_req)
+        scalar_df = scalar_res[0].df()
+        if "value" not in scalar_df.columns or scalar_df.empty:
+            raise ValueError("Unable to retrieve 'ud_delta' as time series or scalar from BQL.")
+        scalar_val = float(scalar_df["value"].iloc[0])
+        # Broadcast constant delta across cb_close index
+        ud_delta = pd.Series(scalar_val, index=cb_close.index).rename("ud_delta")
 
     return TimeSeriesData(cb_close=cb_close, udly_close=udly_close, ud_delta=ud_delta)
 
