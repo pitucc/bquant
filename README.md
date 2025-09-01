@@ -10,7 +10,8 @@ Contenu
 -------
 - `bquant_app/logic.py`: fonction de calcul DN à partir de séries Pandas.
 - `bquant_app/bql_fetch.py`: accès BQL pour séries, dérivation du sous-jacent et nuke.
-- `bquant_app/app.py`: mini-app Panel (tickers, dates, méthode, graphique DN + table).
+- `bquant_app/app.py`: mini-app Panel (JS) — nécessite jupyter_bokeh/JS autorisé.
+- `bquant_app/static_app.py`: tracé statique Matplotlib (sans JS) pour notebook JupyterLab restreint.
 
 Utilisation dans BQuant
 -----------------------
@@ -42,6 +43,34 @@ Notes BQL
 - Nuke BQL: `nuke_dollar_neutral_price(nuke_anchor_bond_price(), nuke_anchor_underlying_price(), nuke_input_underlying_price())`.
 - L’app tente un calcul vectorisé via BQL; si indisponible, elle bascule sur un fallback (delta linéaire) ou, selon l’environnement, des appels BQL unitaires plus lents.
 - Les séries sont récupérées en Business Days (jours ouvrés). Adaptez le `freq` si votre environnement BQL utilise une autre clé.
+
+Affichage statique (sans JS)
+----------------------------
+Si JupyterLab bloque le JavaScript, utilisez le module statique (Matplotlib) :
+
+```python
+import pandas as pd
+from bquant_app.static_app import plot_dn_static
+
+cb = "DE000A4DFHL5 Corp"
+start, end = "2024-01-01", pd.Timestamp.today().date().isoformat()
+
+# Méthode BQL nuke (fallback delta si indisponible), ancre = premier jour commun
+fig, ax, df = plot_dn_static(
+    cb_ticker=cb,
+    udly_ticker=None,   # dérivation auto via cv_common_ticker_exch()
+    start=start,
+    end=end,
+    anchor_date=None,
+    method="BQL nuke", # ou "Delta (linéaire)"
+    delta_override=None,
+    use_oldest_delta=False,
+    show_cb_reference=True,
+)
+fig
+```
+
+Ce tracé ne dépend pas de Bokeh/Panel/JS et s’affiche dans un notebook JupyterLab restreint.
 
 Exigences
 ---------
