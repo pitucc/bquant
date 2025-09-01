@@ -37,10 +37,12 @@ Utilisation dans BQuant
 
 Notes BQL
 ---------
+- API utilisée: namespaces modernes `bq.data.*` et `bq.func.*` (conformément au guide HTML BQL).
+- Exemples: `bq.func.range(...)`, `bq.data.px_last(dates=...)`, `bq.data.ud_delta(dates=...)`, `bq.data.cv_common_ticker_exch()`.
+- Fonctions « nuke »: `bq.func.nuke_dollar_neutral_price(...)`, `bq.func.nuke_anchor_bond_price(...)`, `bq.func.nuke_anchor_underlying_price(...)`, `bq.func.nuke_input_underlying_price(...)`.
 - Le champ delta de la convertible est `ud_delta`.
 - Les champs de prix utilisés sont `px_last` pour CB et sous-jacent.
 - Sous-jacent dérivé automatiquement via `cv_common_ticker_exch()` si non renseigné.
-- Nuke BQL: `nuke_dollar_neutral_price(nuke_anchor_bond_price(), nuke_anchor_underlying_price(), nuke_input_underlying_price())`.
 - L’app tente un calcul vectorisé via BQL; si indisponible, elle bascule sur un fallback (delta linéaire) ou, selon l’environnement, des appels BQL unitaires plus lents.
 - Les séries sont récupérées en Business Days (jours ouvrés). Adaptez le `freq` si votre environnement BQL utilise une autre clé.
 
@@ -72,20 +74,46 @@ fig
 
 Ce tracé ne dépend pas de Bokeh/Panel/JS et s’affiche dans un notebook JupyterLab restreint.
 
-Problème courant: AttributeError sur bql.Function / mauvais module bql
------------------------------------------------------------------------
-Si vous voyez `AttributeError: module 'bql' has no attribute 'Function'`, votre environnement charge probablement un mauvais package `bql` (depuis PyPI) au lieu du BQL Bloomberg.
+Problème courant: mauvais module `bql` (PyPI) vs Bloomberg BQL
+----------------------------------------------------------------
+Si vous voyez des erreurs liées à `bql` (e.g., `AttributeError` sur `Service`, `Request`, `data` ou `func`), votre environnement charge probablement un package `bql` tiers (PyPI) au lieu du runtime Bloomberg.
 
-- Vérifiez le module chargé:
+- Vérifiez le module chargé et les attributs clés:
   ```python
-  import bql, inspect; print(bql.__file__); print([a for a in ("Service","Function","Request") if hasattr(bql,a)])
+  import bql; print(bql.__file__)
+  bq = bql.Service()
+  print("has data:", hasattr(bq, "data"), ", has func:", hasattr(bq, "func"), ", has execute:", hasattr(bq, "execute"))
   ```
-- Si `Function/Service/Request` manquent et le chemin pointe vers un site-packages tiers, désinstallez ce `bql`:
+- Si le chemin pointe vers un site-packages tiers ou que `data/func` manquent, désinstallez le `bql` PyPI:
   ```python
   %pip uninstall -y bql
   ```
-  Redémarrez le kernel, puis exécutez dans un environnement Bloomberg BQuant où `bql` est fourni nativement.
-- Notre code détecte désormais ce cas et lève une erreur explicite avec guidance.
+  Redémarrez le kernel, puis utilisez un environnement Bloomberg BQuant où `bql` est fourni nativement.
+- Le code détecte ce cas et lève une erreur explicite avec guidance.
+
+Test rapide (BQuant)
+--------------------
+Exécutez ce test dans un Notebook BQuant pour valider l’accès BQL et les requêtes:
+
+```python
+from bquant_app.bql_fetch import fetch_timeseries_with_bql, compute_nuke_series_with_bql
+import pandas as pd
+
+cb = "<CB TICKER ICI>"             # e.g., "DE000A4DFHL5 Corp"
+ud = None                           # laisser None pour dérivation via cv_common_ticker_exch()
+start, end = "2024-01-01", pd.Timestamp.today().date().isoformat()
+
+ts = fetch_timeseries_with_bql(cb_ticker=cb, udly_ticker=ud, start=start, end=end, freq="BUSINESS_DAYS")
+print("CB series head:\n", ts.cb_close.head())
+print("UDLY series head:\n", ts.udly_close.head())
+print("UD delta head:\n", ts.ud_delta.head())
+
+# Optionnel: test de la fonction nuke BQL (anchor = premier jour commun)
+CB0 = ts.cb_close.dropna().iloc[0]
+U0 = ts.udly_close.dropna().iloc[0]
+nuke_series = compute_nuke_series_with_bql(cb_ticker=cb, udly_close=ts.udly_close, anchor_cb_price=float(CB0), anchor_udly_price=float(U0))
+print("Nuke head:\n", nuke_series.head())
+```
 
 Sans BQL, vous pouvez tracer via des séries pré-chargées:
 ```python

@@ -32,8 +32,8 @@ def _ensure_series(df: pd.DataFrame, value_col: str = "value") -> pd.Series:
 def _get_bql_service():
     """Return (bql_module, bql_service) or raise a clear error if not Bloomberg BQL.
 
-    Detects the common pitfall where a third-party 'bql' package shadows Bloomberg's BQL
-    and lacks attributes like 'Function' or 'Service'.
+    Uses the modern namespaced API (`bq.data`, `bq.func`). Also surfaces a helpful
+    error if a third‑party `bql` package is shadowing Bloomberg's BQL runtime.
     """
     try:
         import bql  # type: ignore
@@ -42,18 +42,27 @@ def _get_bql_service():
             "Bloomberg BQL runtime not available (cannot import 'bql'). Run in BQuant environment."
         ) from exc
 
-    required = ("Service", "Function", "Request")
-    missing = [a for a in required if not hasattr(bql, a)]
-    if missing:
-        # Likely wrong 'bql' installed from PyPI shadowing Bloomberg's internal package
+    if not hasattr(bql, "Service") or not hasattr(bql, "Request"):
         mod_path = getattr(bql, "__file__", "<unknown>")
         raise RuntimeError(
-            f"Invalid 'bql' module: missing {missing}. Found at {mod_path}.\n"
+            f"Invalid 'bql' module (no Service/Request). Found at {mod_path}.\n"
             "You may have installed an unrelated 'bql' from PyPI. In BQuant, you do not need to pip install 'bql'.\n"
             "Fix: uninstall the PyPI 'bql' (e.g., `%pip uninstall -y bql`) and restart, or run this code inside Bloomberg BQuant."
         )
 
-    return bql, bql.Service()
+    try:
+        bq = bql.Service()
+    except Exception as exc:
+        raise RuntimeError("Unable to construct bql.Service(); check BQuant/BQL runtime.") from exc
+
+    # Basic sanity: modern API should expose namespaced accessors
+    for attr in ("data", "func", "execute"):
+        if not hasattr(bq, attr):
+            raise RuntimeError(
+                f"bql.Service() missing attribute '{attr}'. Your BQL runtime may be incompatible."
+            )
+
+    return bql, bq
 
 
 def derive_underlying_from_cb(cb_ticker: str) -> str:
@@ -63,8 +72,8 @@ def derive_underlying_from_cb(cb_ticker: str) -> str:
     Returns a string ticker (e.g., "TICK US Equity").
     """
     bql, bq = _get_bql_service()
-    fn = bql.Function("cv_common_ticker_exch")
-    req = bql.Request(cb_ticker, fn)
+    item = bq.data.cv_common_ticker_exch()
+    req = bql.Request(cb_ticker, item)
     res = bq.execute(req)
     df = res[0].df()
     # Expect a single string value
@@ -92,29 +101,33 @@ def fetch_timeseries_with_bql(
     """
     bql, bq = _get_bql_service()
 
-    # Helper to request a simple price time series
-    def _px_ts(sec: str, field: str) -> pd.Series:
-        dates = bql.Function("range", start, end, freq)  # e.g., 'BUSINESS_DAYS'
-        px = bql.Function(field, dates)  # e.g., px_last(range(...))
-        req = bql.Request(sec, px)
+    # Helper to request a simple time series from bq.data
+    def _ts(sec: str, data_item_name: str) -> pd.Series:
+        dates = bq.func.range(start, end, freq)
+        try:
+            data_item_factory = getattr(bq.data, data_item_name)
+        except AttributeError as exc:
+            raise RuntimeError(f"Unknown BQL data item: {data_item_name}") from exc
+        di = data_item_factory(dates=dates)
+        req = bql.Request(sec, di)
         res = bq.execute(req)
         df = res[0].df()
         return _ensure_series(df)
 
     # Convertible close
-    cb_close = _px_ts(cb_ticker, "px_last")
+    cb_close = _ts(cb_ticker, "px_last")
 
     # Underlying close (either provided or derived)
     if not udly_ticker:
         udly_ticker = derive_underlying_from_cb(cb_ticker)
-    udly_close = _px_ts(udly_ticker, "px_last")
+    udly_close = _ts(udly_ticker, "px_last")
 
     # CB delta time series (field provided by user: ud_delta)
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
-    dates = bql.Function("range", start, end, freq)
-    delta_fn = bql.Function("ud_delta", dates)
-    delta_req = bql.Request(cb_ticker, delta_fn)
+    dates = bq.func.range(start, end, freq)
+    delta_item = bq.data.ud_delta(dates=dates)
+    delta_req = bql.Request(cb_ticker, delta_item)
     delta_res = bq.execute(delta_req)
     ud_delta = _ensure_series(delta_res[0].df())
 
@@ -136,11 +149,10 @@ def compute_nuke_with_bql_function_single(
     """
     bql, bq = _get_bql_service()
 
-    fn = bql.Function(
-        "nuke_dollar_neutral_price",
-        bql.Function("nuke_anchor_bond_price", float(anchor_cb_price)),
-        bql.Function("nuke_anchor_underlying_price", float(anchor_udly_price)),
-        bql.Function("nuke_input_underlying_price", float(input_udly_price)),
+    fn = bq.func.nuke_dollar_neutral_price(
+        bq.func.nuke_anchor_bond_price(float(anchor_cb_price)),
+        bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
+        bq.func.nuke_input_underlying_price(float(input_udly_price)),
     )
     req = bql.Request(cb_ticker, fn)
     res = bq.execute(req)
@@ -171,14 +183,13 @@ def compute_nuke_series_with_bql(
         # To use the existing series directly, request the same range and map by date.
         start = input_series.index[0].strftime("%Y-%m-%d")
         end = input_series.index[-1].strftime("%Y-%m-%d")
-        dates = bql.Function("range", start, end, "BUSINESS_DAYS")
-        udly_ts_fn = bql.Function("px_last", dates)
+        dates = bq.func.range(start, end, "BUSINESS_DAYS")
+        udly_ts_item = bq.data.px_last(dates=dates)
 
-        nuke_fn = bql.Function(
-            "nuke_dollar_neutral_price",
-            bql.Function("nuke_anchor_bond_price", float(anchor_cb_price)),
-            bql.Function("nuke_anchor_underlying_price", float(anchor_udly_price)),
-            bql.Function("nuke_input_underlying_price", udly_ts_fn),
+        nuke_fn = bq.func.nuke_dollar_neutral_price(
+            bq.func.nuke_anchor_bond_price(float(anchor_cb_price)),
+            bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
+            bq.func.nuke_input_underlying_price(udly_ts_item),
         )
         req = bql.Request(cb_ticker, nuke_fn)
         res = bq.execute(req)
