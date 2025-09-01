@@ -112,11 +112,11 @@ def fetch_timeseries_with_bql(
     # CB delta time series (field provided by user: ud_delta)
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
-        dates = bql.Function("range", start, end, freq)
-        delta_fn = bql.Function("ud_delta", dates)
-        delta_req = bql.Request(cb_ticker, delta_fn)
-        delta_res = bq.execute(delta_req)
-        ud_delta = _ensure_series(delta_res[0].df())
+    dates = bql.Function("range", start, end, freq)
+    delta_fn = bql.Function("ud_delta", dates)
+    delta_req = bql.Request(cb_ticker, delta_fn)
+    delta_res = bq.execute(delta_req)
+    ud_delta = _ensure_series(delta_res[0].df())
 
     return TimeSeriesData(cb_close=cb_close, udly_close=udly_close, ud_delta=ud_delta)
 
