@@ -15,18 +15,48 @@ class TimeSeriesData:
 def _ensure_series(df: pd.DataFrame, value_col: str = "value") -> pd.Series:
     if isinstance(df, pd.Series):
         return df
-    # Expect a tidy frame with [date, value] or an index of dates
-    if "date" in df.columns and value_col in df.columns:
-        out = df.set_index("date").sort_index()[value_col].copy()
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise ValueError("Cannot coerce to Series: empty or invalid DataFrame.")
+
+    # Case-insensitive handling for 'date'
+    cols = list(df.columns)
+    lower_map = {c.lower(): c for c in cols}
+    date_key = next((c for c in cols if c.lower() == "date"), None)
+
+    # If explicit [date, value]
+    if date_key and value_col in cols:
+        out = df.set_index(date_key).sort_index()[value_col].copy()
         out.index = pd.to_datetime(out.index)
         return out
-    # Fallback: if index is already date-like and there's a single column
+
+    # If we have a date column and exactly one non-meta column, pick it
+    if date_key:
+        meta_like = {date_key, "security", "SECURITY", "ticker", "TICKER"}
+        candidates = [c for c in cols if c not in meta_like]
+        # If multiple, prefer 'value' or first numeric column
+        if len(candidates) == 1:
+            picked = candidates[0]
+        else:
+            if value_col in candidates:
+                picked = value_col
+            else:
+                numeric = [c for c in candidates if pd.api.types.is_numeric_dtype(df[c])]
+                picked = numeric[0] if numeric else (candidates[0] if candidates else None)
+        if picked:
+            out = df.set_index(date_key).sort_index()[picked].copy()
+            out.index = pd.to_datetime(out.index)
+            return out
+
+    # Fallback: date-like index and single value column
     if df.shape[1] == 1:
         col = df.columns[0]
         out = df[col].copy()
         out.index = pd.to_datetime(out.index)
         return out
-    raise ValueError("Cannot coerce DataFrame to a date-indexed Series. Provide tidy [date, value].")
+
+    raise ValueError(
+        "Cannot coerce DataFrame to a date-indexed Series. Provide tidy [date, value]."
+    )
 
 
 def _get_bql_service():
@@ -72,7 +102,7 @@ def derive_underlying_from_cb(cb_ticker: str) -> str:
     Returns a string ticker (e.g., "TICK US Equity").
     """
     bql, bq = _get_bql_service()
-    item = bq.data.cv_common_ticker_exch()
+    item = {"value": bq.data.cv_common_ticker_exch()}
     req = bql.Request(cb_ticker, item)
     res = bq.execute(req)
     df = res[0].df()
@@ -110,7 +140,7 @@ def fetch_timeseries_with_bql(
         except AttributeError as exc:
             raise RuntimeError(f"Unknown BQL data item: {data_item_name}") from exc
         di = data_item_factory(dates=dates)
-        req = bql.Request(sec, di)
+        req = bql.Request(sec, {"value": di})
         res = bq.execute(req)
         df = res[0].df()
         return _ensure_series(df)
@@ -127,7 +157,7 @@ def fetch_timeseries_with_bql(
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
     dates = bq.func.range(start, end)
-    delta_item = bq.data.ud_delta(dates=dates)
+    delta_item = {"value": bq.data.ud_delta(dates=dates)}
     delta_req = bql.Request(cb_ticker, delta_item)
     delta_res = bq.execute(delta_req)
     ud_delta = _ensure_series(delta_res[0].df())
@@ -155,7 +185,7 @@ def compute_nuke_with_bql_function_single(
         bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
         bq.func.nuke_input_underlying_price(float(input_udly_price)),
     )
-    req = bql.Request(cb_ticker, fn)
+    req = bql.Request(cb_ticker, {"value": fn})
     res = bq.execute(req)
     df = res[0].df()
     return float(df["value"].iloc[0])
@@ -192,7 +222,7 @@ def compute_nuke_series_with_bql(
             bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
             bq.func.nuke_input_underlying_price(udly_ts_item),
         )
-        req = bql.Request(cb_ticker, nuke_fn)
+        req = bql.Request(cb_ticker, {"value": nuke_fn})
         res = bq.execute(req)
         series_vec = _ensure_series(res[0].df())
         # Align to provided index
