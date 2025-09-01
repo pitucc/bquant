@@ -111,8 +111,16 @@ print("UD delta head:\n", ts.ud_delta.head())
 # Optionnel: test de la fonction nuke BQL (anchor = premier jour commun)
 CB0 = ts.cb_close.dropna().iloc[0]
 U0 = ts.udly_close.dropna().iloc[0]
-nuke_series = compute_nuke_series_with_bql(cb_ticker=cb, udly_close=ts.udly_close, anchor_cb_price=float(CB0), anchor_udly_price=float(U0))
-print("Nuke head:\n", nuke_series.head())
+try:
+    nuke_series = compute_nuke_series_with_bql(
+        cb_ticker=cb,
+        udly_close=ts.udly_close,
+        anchor_cb_price=float(CB0),
+        anchor_udly_price=float(U0),
+    )
+    print("Nuke head:\n", nuke_series.head())
+except Exception as e:
+    print("BQL nuke unavailable or failed (fallback to linear):", type(e).__name__, e)
 ```
 
 Sans BQL, vous pouvez tracer via des séries pré-chargées:

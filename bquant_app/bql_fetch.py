@@ -96,6 +96,15 @@ def _get_bql_service():
     return bql, bq
 
 
+def _has_nuke_funcs(bq) -> bool:
+    # In this environment, the nuke function is exposed under bq.data with keyword args
+    return hasattr(bq.data, "nuke_dollar_neutral_price")
+
+
+def _hedge_model() -> str:
+    return os.getenv("BQL_NUKE_HEDGE_MODEL", "Delta")
+
+
 def derive_underlying_from_cb(cb_ticker: str) -> str:
     """Derive the common underlying ticker from a convertible via BQL.
 
@@ -252,22 +261,38 @@ def compute_nuke_with_bql_function_single(
     anchor_cb_price: float,
     anchor_udly_price: float,
     input_udly_price: float,
+    anchor_delta: Optional[float] = None,
 ) -> float:
     """Call BQL nuke function for a single input underlying price.
 
-    Uses: nuke_dollar_neutral_price(
-            nuke_anchor_bond_price(anchor_cb_price),
-            nuke_anchor_underlying_price(anchor_udly_price),
-            nuke_input_underlying_price(input_udly_price))
+    Uses data.nuke_dollar_neutral_price with keyword args:
+    - nuke_input_underlying_price
+    - nuke_anchor_bond_price
+    - nuke_anchor_underlying_price
+    - delta_hedge_cv_model (default: "Delta" or env BQL_NUKE_HEDGE_MODEL)
     Returns a float.
     """
     bql, bq = _get_bql_service()
+    if not _has_nuke_funcs(bq):
+        raise RuntimeError("BQL nuke function is unavailable in this environment.")
 
-    fn = bq.func.nuke_dollar_neutral_price(
-        bq.func.nuke_anchor_bond_price(float(anchor_cb_price)),
-        bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
-        bq.func.nuke_input_underlying_price(float(input_udly_price)),
+    # Build kwargs according to environment
+    kwargs = dict(
+        nuke_input_underlying_price=float(input_udly_price),
+        delta_hedge_cv_model=_hedge_model(),
+        nuke_anchor_bond_price=float(anchor_cb_price),
+        nuke_anchor_underlying_price=float(anchor_udly_price),
     )
+    # Optional: pass explicit delta if param name is provided via env
+    delta_arg = os.getenv("BQL_NUKE_DELTA_ARG", "").strip()
+    if delta_arg:
+        if anchor_delta is None:
+            raise RuntimeError(
+                "BQL_NUKE_DELTA_ARG is set but no anchor_delta provided."
+            )
+        kwargs[delta_arg] = float(anchor_delta)
+
+    fn = bq.data.nuke_dollar_neutral_price(**kwargs)
     req = bql.Request(cb_ticker, {"value": fn})
     res = bq.execute(req)
     df = res[0].df()
@@ -279,6 +304,7 @@ def compute_nuke_series_with_bql(
     udly_close: pd.Series,
     anchor_cb_price: float,
     anchor_udly_price: float,
+    anchor_delta: Optional[float] = None,
 ) -> pd.Series:
     """Attempt a vectorized BQL nuke over the given date index; fallback to per-date calls.
 
@@ -290,6 +316,8 @@ def compute_nuke_series_with_bql(
     """
     try:
         bql, bq = _get_bql_service()
+        if not _has_nuke_funcs(bq):
+            raise RuntimeError("BQL nuke function is unavailable in this environment.")
 
         # Try to build a vectorized expression using the underlying PX time series as input
         # Note: Some BQL deployments accept numeric literals in functions; adjust if needed.
@@ -300,11 +328,21 @@ def compute_nuke_series_with_bql(
         dates = bq.func.range(start, end)
         udly_ts_item = bq.data.px_last(dates=dates)
 
-        nuke_fn = bq.func.nuke_dollar_neutral_price(
-            bq.func.nuke_anchor_bond_price(float(anchor_cb_price)),
-            bq.func.nuke_anchor_underlying_price(float(anchor_udly_price)),
-            bq.func.nuke_input_underlying_price(udly_ts_item),
+        kwargs = dict(
+            nuke_input_underlying_price=udly_ts_item,
+            delta_hedge_cv_model=_hedge_model(),
+            nuke_anchor_bond_price=float(anchor_cb_price),
+            nuke_anchor_underlying_price=float(anchor_udly_price),
         )
+        delta_arg = os.getenv("BQL_NUKE_DELTA_ARG", "").strip()
+        if delta_arg:
+            if anchor_delta is None:
+                raise RuntimeError(
+                    "BQL_NUKE_DELTA_ARG is set but no anchor_delta provided."
+                )
+            kwargs[delta_arg] = float(anchor_delta)
+
+        nuke_fn = bq.data.nuke_dollar_neutral_price(**kwargs)
         req = bql.Request(cb_ticker, {"value": nuke_fn})
         res = bq.execute(req)
         series_vec = _ensure_series(res[0].df())
@@ -316,6 +354,10 @@ def compute_nuke_series_with_bql(
         raise RuntimeError("Vectorized BQL nuke returned empty series; falling back.")
     except Exception:
         # Fallback: per-date single computations (slower but robust)
+        # If nuke function is absent, bail out early to let caller choose linear method
+        bql, bq = _get_bql_service()
+        if not _has_nuke_funcs(bq):
+            raise RuntimeError("BQL nuke function is unavailable; use linear method.")
         values = {}
         for dt_idx, u in udly_close.sort_index().items():
             try:
@@ -324,6 +366,7 @@ def compute_nuke_series_with_bql(
                     anchor_cb_price=anchor_cb_price,
                     anchor_udly_price=anchor_udly_price,
                     input_udly_price=float(u),
+                    anchor_delta=anchor_delta,
                 )
                 values[pd.Timestamp(dt_idx)] = nuke_val
             except Exception:

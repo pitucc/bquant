@@ -55,11 +55,13 @@ def plot_dn_static(
         try:
             CB0 = float(df.at[actual_anchor, "cb_close"])
             U0 = float(df.at[actual_anchor, "udly_close"])
+            D0 = float(df.at[actual_anchor, "ud_delta"]) if "ud_delta" in df.columns else None
             nuke_series = compute_nuke_series_with_bql(
                 cb_ticker=cb_ticker,
                 udly_close=df["udly_close"],
                 anchor_cb_price=CB0,
                 anchor_udly_price=U0,
+                anchor_delta=D0,
             )
             df = compute_dollar_neutral(
                 cb_close=ts.cb_close,
