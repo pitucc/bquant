@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Optional, Tuple, Iterable
 import pandas as pd
 
@@ -107,7 +108,10 @@ def derive_underlying_from_cb(cb_ticker: str) -> str:
     elif hasattr(bq.func, "cv_common_ticker_exch"):
         expr = bq.func.cv_common_ticker_exch()
     else:
-        expr = bql.Function("cv_common_ticker_exch")
+        raise RuntimeError(
+            "BQL does not expose 'cv_common_ticker_exch' in this environment. "
+            "Please provide the underlying ticker explicitly."
+        )
     req = bql.Request(cb_ticker, {"value": expr})
     res = bq.execute(req)
     df = res[0].df()
@@ -150,8 +154,9 @@ def fetch_timeseries_with_bql(
             except TypeError:
                 di = getattr(bq.func, data_item_name)(dates)
         else:
-            # Legacy fallback
-            di = bql.Function(data_item_name, dates)
+            raise RuntimeError(
+                f"Unknown BQL item '{data_item_name}' (neither bq.data nor bq.func)."
+            )
         req = bql.Request(sec, {"value": di})
         res = bq.execute(req)
         df = res[0].df()
@@ -169,17 +174,33 @@ def fetch_timeseries_with_bql(
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
     dates = bq.func.range(start, end)
-    # Robust resolution for ud_delta: try time series first; if it fails, try scalar and broadcast
+    # Robust resolution for ud_delta: try configurable item name(s). If series fails, try scalar and broadcast.
     try:
-        if hasattr(bq.data, "ud_delta"):
-            delta_expr = bq.data.ud_delta(dates=dates)
-        elif hasattr(bq.func, "ud_delta"):
-            try:
-                delta_expr = bq.func.ud_delta(dates=dates)
-            except TypeError:
-                delta_expr = bq.func.ud_delta(dates)
-        else:
-            delta_expr = bql.Function("ud_delta", dates)
+        # Candidate names: env override first, then common fallbacks
+        env_name = os.getenv("BQL_DELTA_ITEM", "ud_delta").strip()
+        candidates = []
+        if env_name:
+            candidates.append(env_name)
+        for n in ("ud_delta", "delta", "conv_delta", "cb_delta"):
+            if n not in candidates:
+                candidates.append(n)
+
+        delta_expr = None
+        chosen_name = None
+        for name in candidates:
+            if hasattr(bq.data, name):
+                delta_expr = getattr(bq.data, name)(dates=dates)
+                chosen_name = name
+                break
+            if hasattr(bq.func, name):
+                try:
+                    delta_expr = getattr(bq.func, name)(dates=dates)
+                except TypeError:
+                    delta_expr = getattr(bq.func, name)(dates)
+                chosen_name = name
+                break
+        if delta_expr is None:
+            raise RuntimeError("No BQL time series for a delta item was found.")
 
         delta_item = {"value": delta_expr}
         delta_req = bql.Request(cb_ticker, delta_item)
@@ -188,18 +209,32 @@ def fetch_timeseries_with_bql(
     except Exception:
         # Scalar fallback (as-of), then broadcast over cb_close index
         scalar_expr = None
-        if hasattr(bq.data, "ud_delta"):
-            try:
-                scalar_expr = bq.data.ud_delta()
-            except Exception:
-                scalar_expr = None
-        if scalar_expr is None and hasattr(bq.func, "ud_delta"):
-            try:
-                scalar_expr = bq.func.ud_delta()
-            except Exception:
-                scalar_expr = None
+        env_name = os.getenv("BQL_DELTA_ITEM", "ud_delta").strip()
+        candidates = []
+        if env_name:
+            candidates.append(env_name)
+        for n in ("ud_delta", "delta", "conv_delta", "cb_delta"):
+            if n not in candidates:
+                candidates.append(n)
+
+        for name in candidates:
+            if hasattr(bq.data, name):
+                try:
+                    scalar_expr = getattr(bq.data, name)()
+                    break
+                except Exception:
+                    pass
+            if hasattr(bq.func, name):
+                try:
+                    scalar_expr = getattr(bq.func, name)()
+                    break
+                except Exception:
+                    pass
         if scalar_expr is None:
-            scalar_expr = bql.Function("ud_delta")
+            raise RuntimeError(
+                "No BQL data item or function for a delta (scalar or time series). "
+                "Set a fixed delta in the UI or define env var BQL_DELTA_ITEM."
+            )
 
         scalar_req = bql.Request(cb_ticker, {"value": scalar_expr})
         scalar_res = bq.execute(scalar_req)
