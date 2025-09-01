@@ -103,7 +103,8 @@ def fetch_timeseries_with_bql(
 
     # Helper to request a simple time series from bq.data
     def _ts(sec: str, data_item_name: str) -> pd.Series:
-        dates = bq.func.range(start, end, freq)
+        # Use two-parameter range per BQL guide (default business days)
+        dates = bq.func.range(start, end)
         try:
             data_item_factory = getattr(bq.data, data_item_name)
         except AttributeError as exc:
@@ -125,7 +126,7 @@ def fetch_timeseries_with_bql(
     # CB delta time series (field provided by user: ud_delta)
     # If ud_delta is available as a time series field, the same style works; otherwise
     # adapt this to your environment.
-    dates = bq.func.range(start, end, freq)
+    dates = bq.func.range(start, end)
     delta_item = bq.data.ud_delta(dates=dates)
     delta_req = bql.Request(cb_ticker, delta_item)
     delta_res = bq.execute(delta_req)
@@ -183,7 +184,7 @@ def compute_nuke_series_with_bql(
         # To use the existing series directly, request the same range and map by date.
         start = input_series.index[0].strftime("%Y-%m-%d")
         end = input_series.index[-1].strftime("%Y-%m-%d")
-        dates = bq.func.range(start, end, "BUSINESS_DAYS")
+        dates = bq.func.range(start, end)
         udly_ts_item = bq.data.px_last(dates=dates)
 
         nuke_fn = bq.func.nuke_dollar_neutral_price(
